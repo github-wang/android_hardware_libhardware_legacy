@@ -71,5 +71,7 @@ endif
 ifeq ($(BOARD_USE_XIAOMI_MIONE_WIFI),true)
     LOCAL_CFLAGS += -DXIAOMI_MIONE_WIFI
 endif
-
+#Hack for build
+$(shell mkdir -p $(OUT)/obj/SHARED_LIBRARIES/libreadmac_intermediates)
+$(shell touch $(OUT)/obj/SHARED_LIBRARIES/libreadmac_intermediates/export_includes)
 LOCAL_SHARED_LIBRARIES += libnetutils libreadmac
