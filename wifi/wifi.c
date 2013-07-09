@@ -1276,6 +1276,10 @@ int wifi_command(const char *ifname, const char *command, char *reply, size_t *r
 
 const char *wifi_get_fw_path(int fw_type)
 {
+#ifdef XIAOMI_MIONE_WIFI
+    check_wifi_module();
+    ALOGD("Wifi Module checked");
+#endif
     switch (fw_type) {
     case WIFI_GET_FW_PATH_STA:
 #ifndef XIAOMI_MIONE_WIFI
@@ -1287,6 +1291,7 @@ const char *wifi_get_fw_path(int fw_type)
 #ifndef XIAOMI_MIONE_WIFI
         return WIFI_DRIVER_FW_PATH_AP;
 #else
+        ALOGD("ApFirmware=%s", is_wifi_module_4330 ? WIFI_DRIVER_FW_PATH_AP_DHD : WIFI_DRIVER_FW_PATH_AP);
         return is_wifi_module_4330 ? WIFI_DRIVER_FW_PATH_AP_DHD : WIFI_DRIVER_FW_PATH_AP;
 #endif
     case WIFI_GET_FW_PATH_P2P:
