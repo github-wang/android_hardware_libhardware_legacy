@@ -71,7 +71,6 @@ extern char *dhcp_lasterror();
 extern void get_dhcp_info();
 extern int init_module(void *, unsigned long, const char *);
 extern int delete_module(const char *, unsigned int);
-void wifi_close_sockets(int index);
 
 static int wifi_mode = 0;
 
@@ -107,6 +106,16 @@ struct genl_family *nl80211;
 #define WIFI_DRIVER_FW_PATH_P2P		NULL
 #endif
 
+#ifndef WIFI_DRIVER_FW_PATH_STA_DHD
+#define WIFI_DRIVER_FW_PATH_STA_DHD		NULL
+#endif
+#ifndef WIFI_DRIVER_FW_PATH_AP_DHD
+#define WIFI_DRIVER_FW_PATH_AP_DHD		NULL
+#endif
+#ifndef WIFI_DRIVER_FW_PATH_P2P_DHD
+#define WIFI_DRIVER_FW_PATH_P2P_DHD		NULL
+#endif
+
 #ifdef WIFI_EXT_MODULE_NAME
 static const char EXT_MODULE_NAME[] = WIFI_EXT_MODULE_NAME;
 #ifdef WIFI_EXT_MODULE_ARG
@@ -125,11 +134,22 @@ static const char EXT_MODULE_PATH[] = WIFI_EXT_MODULE_PATH;
 
 static const char IFACE_DIR[]           = "/data/system/wpa_supplicant";
 #ifdef WIFI_DRIVER_MODULE_PATH
+#ifndef XIAOMI_MIONE_WIFI
 static const char DRIVER_MODULE_NAME[]  = WIFI_DRIVER_MODULE_NAME;
 static const char DRIVER_MODULE_TAG[]   = WIFI_DRIVER_MODULE_NAME " ";
 static const char DRIVER_MODULE_PATH[]  = WIFI_DRIVER_MODULE_PATH;
 static const char DRIVER_MODULE_ARG[]   = WIFI_DRIVER_MODULE_ARG;
-static const char DRIVER_MODULE_AP_ARG[] = WIFI_DRIVER_MODULE_AP_ARG;
+#else
+/* WIFI_DRIVER_MODULE_ARG_DHD is longer than WIFI_DRIVER_MODULE_ARG */
+static char DRIVER_MODULE_NAME[]  = WIFI_DRIVER_MODULE_NAME;
+static char DRIVER_MODULE_TAG[]   = WIFI_DRIVER_MODULE_NAME " ";
+static char DRIVER_MODULE_PATH[]  = WIFI_DRIVER_MODULE_PATH;
+static char DRIVER_MODULE_ARG[]   = WIFI_DRIVER_MODULE_ARG_DHD;
+static const char DRIVER_MODULE_NAME_DHD[]  = WIFI_DRIVER_MODULE_NAME_DHD;
+static const char DRIVER_MODULE_TAG_DHD[]   = WIFI_DRIVER_MODULE_NAME_DHD " ";
+static const char DRIVER_MODULE_PATH_DHD[]  = WIFI_DRIVER_MODULE_PATH_DHD;
+static const char DRIVER_MODULE_ARG_DHD[]   = WIFI_DRIVER_MODULE_ARG;
+#endif  /* XIAOMI_MIONE_WIFI */
 #endif
 static const char FIRMWARE_LOADER[]     = WIFI_FIRMWARE_LOADER;
 static const char DRIVER_PROP_NAME[]    = "wlan.driver.status";
@@ -148,11 +168,53 @@ static unsigned char dummy_key[21] = { 0x02, 0x11, 0xbe, 0x33, 0x43, 0x35,
                                        0x68, 0x47, 0x84, 0x99, 0xa9, 0x2b,
                                        0x1c, 0xd3, 0xee, 0xff, 0xf1, 0xe2,
                                        0xf3, 0xf4, 0xf5 };
-
+extern char *read_mac();
+static char mac_buf[150];
+static int read_mac_ok;
 /* Is either SUPPLICANT_NAME or P2P_SUPPLICANT_NAME */
 static char supplicant_name[PROPERTY_VALUE_MAX];
 /* Is either SUPP_PROP_NAME or P2P_PROP_NAME */
 static char supplicant_prop_name[PROPERTY_KEY_MAX];
+
+#ifdef WIFI_DRIVER_MODULE_PATH
+#ifdef XIAOMI_MIONE_WIFI
+static int is_wifi_module_4330 = 0xff;
+
+static void check_wifi_module (void)
+{
+    const char path[] = "/sys/wifi_properties/wifi_module";
+    char wifi_module[20];
+    int fd;
+
+    if (0xff == is_wifi_module_4330) {
+        fd = open(path, O_RDONLY);
+        if (fd < 0) {
+            ALOGE("unable to open %s: %s", path, strerror(errno));
+            return ;
+        }
+
+        if (read(fd, wifi_module, sizeof(wifi_module)) < 0) {
+            ALOGE("read %s failed: %s", path, strerror(errno));
+            close(fd);
+            return ;
+        }
+
+        if (0 == strncmp(wifi_module, "wifi_module=4330", 16)) {
+            is_wifi_module_4330 = 1;
+            strcpy(DRIVER_MODULE_NAME, DRIVER_MODULE_NAME_DHD);
+            strcpy(DRIVER_MODULE_TAG, DRIVER_MODULE_TAG_DHD);
+            strcpy(DRIVER_MODULE_PATH, DRIVER_MODULE_PATH_DHD);
+        } else {
+            is_wifi_module_4330 = 0;
+            strcpy(DRIVER_MODULE_ARG, DRIVER_MODULE_ARG_DHD);
+        }
+
+        ALOGW("is_wifi_module_4330: %d", is_wifi_module_4330);
+        close(fd);
+    }
+}
+#endif
+#endif
 
 static int is_primary_interface(const char *ifname)
 {
@@ -184,9 +246,6 @@ char* get_samsung_wifi_type()
 
     if (strncmp(buf, "semcove", 7) == 0)
         return "_semcove";
-
-    if (strncmp(buf, "semcosh", 7) == 0)
-        return "_semcosh";
 
     return NULL;
 }
@@ -255,6 +314,10 @@ int is_wifi_driver_loaded() {
 #ifdef WIFI_DRIVER_MODULE_PATH
     FILE *proc;
     char line[sizeof(DRIVER_MODULE_TAG)+10];
+
+#ifdef XIAOMI_MIONE_WIFI
+    check_wifi_module();
+#endif
 #endif
 
     if (!property_get(DRIVER_PROP_NAME, driver_status, NULL)
@@ -307,13 +370,25 @@ int wifi_load_driver()
 
     property_set(DRIVER_PROP_NAME, "loading");
 
+#ifdef XIAOMI_MIONE_WIFI
+    check_wifi_module();
+#endif
+
 #ifdef WIFI_EXT_MODULE_PATH
     if (insmod(EXT_MODULE_PATH, EXT_MODULE_ARG) < 0)
         return -1;
     usleep(200000);
 #endif
-
+#ifdef XIAOMI_MIONE_WIFI
+    if(is_wifi_module_4330 == 1) {
+        if (read_mac_ok == 0) {
+            read_wlan_mac();
+        }
+    }
+    if (insmod(DRIVER_MODULE_PATH, is_wifi_module_4330 ? mac_buf : DRIVER_MODULE_ARG) < 0) {
+#else
     if (insmod(DRIVER_MODULE_PATH, DRIVER_MODULE_ARG) < 0) {
+#endif
 #endif
 
 #ifdef WIFI_EXT_MODULE_NAME
@@ -354,6 +429,12 @@ int wifi_load_driver()
 
 int wifi_unload_driver()
 {
+#ifdef WIFI_DRIVER_MODULE_PATH
+#ifdef XIAOMI_MIONE_WIFI
+    check_wifi_module();
+#endif
+#endif
+
     usleep(200000); /* allow to finish interface down */
 #ifdef WIFI_DRIVER_MODULE_PATH
     if (rmmod(DRIVER_MODULE_NAME) == 0) {
@@ -431,7 +512,6 @@ int update_ctrl_interface(const char *config_file) {
     char *pbuf;
     char *sptr;
     struct stat sb;
-    int ret;
 
     if (stat(config_file, &sb) != 0)
         return -1;
@@ -458,8 +538,6 @@ int update_ctrl_interface(const char *config_file) {
     } else {
         strcpy(ifc, CONTROL_IFACE_PATH);
     }
-    /* Assume file is invalid to begin with */
-    ret = -1;
     /*
      * if there is a "ctrl_interface=<value>" entry, re-write it ONLY if it is
      * NOT a directory.  The non-directory value option is an Android add-on
@@ -470,35 +548,33 @@ int update_ctrl_interface(const char *config_file) {
      * The <value> is deemed to be a directory if the "DIR=" form is used or
      * the value begins with "/".
      */
-    if (sptr = strstr(pbuf, "ctrl_interface=")) {
-        ret = 0;
-        if ((!strstr(pbuf, "ctrl_interface=DIR=")) &&
-                (!strstr(pbuf, "ctrl_interface=/"))) {
-            char *iptr = sptr + strlen("ctrl_interface=");
-            int ilen = 0;
-            int mlen = strlen(ifc);
-            int nwrite;
-            if (strncmp(ifc, iptr, mlen) != 0) {
-                ALOGE("ctrl_interface != %s", ifc);
-                while (((ilen + (iptr - pbuf)) < nread) && (iptr[ilen] != '\n'))
-                    ilen++;
-                mlen = ((ilen >= mlen) ? ilen : mlen) + 1;
-                memmove(iptr + mlen, iptr + ilen + 1, nread - (iptr + ilen + 1 - pbuf));
-                memset(iptr, '\n', mlen);
-                memcpy(iptr, ifc, strlen(ifc));
-                destfd = TEMP_FAILURE_RETRY(open(config_file, O_RDWR, 0660));
-                if (destfd < 0) {
-                    ALOGE("Cannot update \"%s\": %s", config_file, strerror(errno));
-                    free(pbuf);
-                    return -1;
-                }
-                TEMP_FAILURE_RETRY(write(destfd, pbuf, nread + mlen - ilen -1));
-                close(destfd);
+    if ((sptr = strstr(pbuf, "ctrl_interface=")) &&
+        (!strstr(pbuf, "ctrl_interface=DIR=")) &&
+        (!strstr(pbuf, "ctrl_interface=/"))) {
+        char *iptr = sptr + strlen("ctrl_interface=");
+        int ilen = 0;
+        int mlen = strlen(ifc);
+        int nwrite;
+        if (strncmp(ifc, iptr, mlen) != 0) {
+            ALOGE("ctrl_interface != %s", ifc);
+            while (((ilen + (iptr - pbuf)) < nread) && (iptr[ilen] != '\n'))
+                ilen++;
+            mlen = ((ilen >= mlen) ? ilen : mlen) + 1;
+            memmove(iptr + mlen, iptr + ilen + 1, nread - (iptr + ilen + 1 - pbuf));
+            memset(iptr, '\n', mlen);
+            memcpy(iptr, ifc, strlen(ifc));
+            destfd = TEMP_FAILURE_RETRY(open(config_file, O_RDWR, 0660));
+            if (destfd < 0) {
+                ALOGE("Cannot update \"%s\": %s", config_file, strerror(errno));
+                free(pbuf);
+                return -1;
             }
+            TEMP_FAILURE_RETRY(write(destfd, pbuf, nread + mlen - ilen -1));
+            close(destfd);
         }
     }
     free(pbuf);
-    return ret;
+    return 0;
 }
 
 int ensure_config_file_exists(const char *config_file)
@@ -516,13 +592,9 @@ int ensure_config_file_exists(const char *config_file)
             ALOGE("Cannot set RW to \"%s\": %s", config_file, strerror(errno));
             return -1;
         }
-        /* return if we were able to update control interface properly */
-        if (update_ctrl_interface(config_file) >=0) {
-            return 0;
-        } else {
-            /* This handles the scenario where the file had bad data
-             * for some reason. We continue and recreate the file.
-             */
+        /* return if filesize is at least 10 bytes */
+        if (stat(config_file, &sb) == 0 && sb.st_size > 10) {
+            return update_ctrl_interface(config_file);
         }
     } else if (errno != ENOENT) {
         ALOGE("Cannot access \"%s\": %s", config_file, strerror(errno));
@@ -835,6 +907,12 @@ int wifi_start_supplicant(int p2p_supported)
     unsigned serial = 0, i;
 #endif
 
+#ifdef WIFI_DRIVER_MODULE_PATH
+#ifdef XIAOMI_MIONE_WIFI
+    check_wifi_module();
+#endif
+#endif
+
     if (p2p_supported) {
         strcpy(supplicant_name, P2P_SUPPLICANT_NAME);
         strcpy(supplicant_prop_name, P2P_PROP_NAME);
@@ -1003,11 +1081,15 @@ int wifi_connect_to_supplicant(const char *ifname)
     char path[256];
 
     if (is_primary_interface(ifname)) {
+#ifndef XIAOMI_MIONE_WIFI
         if (access(IFACE_DIR, F_OK) == 0) {
             snprintf(path, sizeof(path), "%s/%s", IFACE_DIR, primary_iface);
         } else {
+#endif
             strlcpy(path, primary_iface, sizeof(path));
+#ifndef XIAOMI_MIONE_WIFI
         }
+#endif
         return wifi_connect_on_socket_path(PRIMARY, path);
     } else {
         sprintf(path, "%s/%s", CONTROL_IFACE_PATH, ifname);
@@ -1071,7 +1153,11 @@ int wifi_ctrl_recv(int index, char *reply, size_t *reply_len)
 int wifi_wait_on_socket(int index, char *buf, size_t buflen)
 {
     size_t nread = buflen - 1;
+    int fd;
+    fd_set rfds;
     int result;
+    struct timeval tval;
+    struct timeval *tptr;
 
     if (monitor_conn[index] == NULL) {
         ALOGD("Connection closed\n");
@@ -1194,13 +1280,30 @@ int wifi_command(const char *ifname, const char *command, char *reply, size_t *r
 
 const char *wifi_get_fw_path(int fw_type)
 {
+#ifdef XIAOMI_MIONE_WIFI
+    check_wifi_module();
+    ALOGD("Wifi Module checked");
+#endif
     switch (fw_type) {
     case WIFI_GET_FW_PATH_STA:
+#ifndef XIAOMI_MIONE_WIFI
         return WIFI_DRIVER_FW_PATH_STA;
+#else
+        return is_wifi_module_4330 ? WIFI_DRIVER_FW_PATH_STA_DHD : WIFI_DRIVER_FW_PATH_STA;
+#endif
     case WIFI_GET_FW_PATH_AP:
+#ifndef XIAOMI_MIONE_WIFI
         return WIFI_DRIVER_FW_PATH_AP;
+#else
+        ALOGD("ApFirmware=%s", is_wifi_module_4330 ? WIFI_DRIVER_FW_PATH_AP_DHD : WIFI_DRIVER_FW_PATH_AP);
+        return is_wifi_module_4330 ? WIFI_DRIVER_FW_PATH_AP_DHD : WIFI_DRIVER_FW_PATH_AP;
+#endif
     case WIFI_GET_FW_PATH_P2P:
+#ifndef XIAOMI_MIONE_WIFI
         return WIFI_DRIVER_FW_PATH_P2P;
+#else
+        return is_wifi_module_4330 ? WIFI_DRIVER_FW_PATH_P2P_DHD : WIFI_DRIVER_FW_PATH_P2P;
+#endif
     }
     return NULL;
 }
@@ -1231,3 +1334,16 @@ int wifi_set_mode(int mode) {
     wifi_mode = mode;
     return 0;
 }
+#ifdef XIAOMI_MIONE_WIFI
+/* The Xiaomi MI-One Plus read mac function */
+int read_wlan_mac() {
+    char *x;
+    if(!strcmp(mac_buf,"")) {
+        x=read_mac();
+        sprintf(mac_buf,"%s mac=0x%02x,0x%02x,0x%02x,0x%02x,0x%02x,0x%02x", DRIVER_MODULE_ARG, x[20], x[16], x[12], x[8], x[4], x[0]);
+    }
+    ALOGI("Got WLAN MAC Address: %s \ ",mac_buf);
+    read_mac_ok = 1;
+    return 0;
+}
+#endif
